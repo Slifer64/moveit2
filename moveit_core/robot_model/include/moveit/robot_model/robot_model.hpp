@@ -117,6 +117,8 @@ public:
   /** \brief Print information about the constructed model */
   void printModelInfo(std::ostream& out) const;
 
+  void printJointLimits(std::ostream& out) const;
+
   /** \name Access to joint models
    *  @{
    */
