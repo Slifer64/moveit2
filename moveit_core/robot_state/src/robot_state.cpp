@@ -547,6 +547,23 @@ void RobotState::setJointVelocities(const JointModel* joint, const double* veloc
   memcpy(&velocity_.at(joint->getFirstVariableIndex()), velocity, joint->getVariableCount() * sizeof(double));
 }
 
+void RobotState::setJointAccelerations(const JointModel* joint, const double* acceleration)
+{
+  if (has_effort_)
+  {
+    RCLCPP_ERROR(getLogger(), "Unable to set joint acceleration because array is being used for efforts");
+    return;
+  }
+  if (joint->getVariableCount() == 0)
+  {
+    return;
+  }
+  has_acceleration_ = true;
+
+  memcpy(&effort_or_acceleration_.at(joint->getFirstVariableIndex()), acceleration,
+         joint->getVariableCount() * sizeof(double));
+}
+
 const double* RobotState::getJointPositions(const JointModel* joint) const
 {
   if (joint->getVariableCount() == 0)
