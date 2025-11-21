@@ -663,6 +663,12 @@ public:
     }
   }
 
+  void setJointGroupActiveVelocities(const JointModelGroup* group, const std::vector<double>& gstate);
+  void setJointGroupActiveVelocities(const JointModelGroup* group, const Eigen::VectorXd& values);
+
+  void setJointGroupActiveAccelerations(const JointModelGroup* group, const std::vector<double>& gstate);
+  void setJointGroupActiveAccelerations(const JointModelGroup* group, const Eigen::VectorXd& values);
+
   /** \brief For a given group, copy the position values of the variables that make up the group into another location,
    * in the order that the variables are found in the group. This is not necessarily a contiguous block of memory in the
    * RobotState itself, so we copy instead of returning a pointer.*/
@@ -714,6 +720,54 @@ public:
    * in the order that the variables are found in the group. This is not necessarily a contiguous block of memory in the
    * RobotState itself, so we copy instead of returning a pointer.*/
   void copyJointGroupPositions(const JointModelGroup* group, Eigen::VectorXd& values) const;
+
+  /** \brief Copy only the joint position variables of the active joint models.
+   */
+  void copyJointGroupActivePositions(const JointModelGroup* group, double* gstate) const;
+
+  void copyJointGroupActivePositions(const JointModelGroup* group, std::vector<double>& gstate) const
+  {
+    gstate.resize(group->getActiveVariableCount());
+    copyJointGroupActivePositions(group, &gstate[0]);
+  }
+
+  void copyJointGroupActivePositions(const JointModelGroup* group, Eigen::VectorXd& gstate) const
+  {
+    gstate.resize(group->getActiveVariableCount());
+    copyJointGroupActivePositions(group, &gstate(0));
+  }
+
+  /** \brief Copy only the joint velocity variables of the active joint models.
+   */
+  void copyJointGroupActiveVelocities(const JointModelGroup* group, double* gstate) const;
+
+  void copyJointGroupActiveVelocities(const JointModelGroup* group, std::vector<double>& gstate) const
+  {
+    gstate.resize(group->getActiveVariableCount());
+    copyJointGroupActiveVelocities(group, &gstate[0]);
+  }
+
+  void copyJointGroupActiveVelocities(const JointModelGroup* group, Eigen::VectorXd& gstate) const
+  {
+    gstate.resize(group->getActiveVariableCount());
+    copyJointGroupActiveVelocities(group, &gstate(0));
+  }
+  
+  /** \brief Copy only the joint acceleration variables of the active joint models.
+   */
+  void copyJointGroupActiveAccelerations(const JointModelGroup* group, double* gstate) const;
+
+  void copyJointGroupActiveAccelerations(const JointModelGroup* group, std::vector<double>& gstate) const
+  {
+    gstate.resize(group->getActiveVariableCount());
+    copyJointGroupActiveAccelerations(group, &gstate[0]);
+  }
+
+  void copyJointGroupActiveAccelerations(const JointModelGroup* group, Eigen::VectorXd& gstate) const
+  {
+    gstate.resize(group->getActiveVariableCount());
+    copyJointGroupActiveAccelerations(group, &gstate(0));
+  }
 
   /** @} */
 
@@ -914,6 +968,16 @@ public:
    * location, in the order that the variables are found in the group. This is not necessarily a contiguous block of
    * memory in the RobotState itself, so we copy instead of returning a pointer.*/
   void copyJointGroupAccelerations(const JointModelGroup* group, Eigen::VectorXd& values) const;
+
+  /** \brief Get only the variables of the active joint models.
+   */
+  template<typename T>
+  T getJointGroupActivePositions(const JointModelGroup* group) const
+  {
+    T gstate;
+    copyJointGroupActivePositions(group, gstate);
+    return gstate;
+  }
 
   /** @} */
 
@@ -1700,6 +1764,10 @@ private:
 
   /** \brief Update all mimic joints within group */
   void updateMimicJoints(const JointModelGroup* group);
+
+  void updateMimicJointVelocity(const JointModel* joint);
+
+  void updateMimicJointAcceleration(const JointModel* joint);
 
   void updateLinkTransformsInternal(const JointModel* start);
 
