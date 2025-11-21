@@ -538,6 +538,8 @@ public:
 
   void setJointVelocities(const JointModel* joint, const double* velocity);
 
+  void setJointAccelerations(const JointModel* joint, const double* acceleration);
+
   void setJointEfforts(const JointModel* joint, const double* effort);
 
   const double* getJointPositions(const std::string& joint_name) const
