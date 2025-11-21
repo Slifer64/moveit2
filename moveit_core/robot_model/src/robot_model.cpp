@@ -1666,5 +1666,64 @@ void RobotModel::computeFixedTransforms(const LinkModel* link, const Eigen::Isom
   }
 }
 
+void RobotModel::printJointLimits(std::ostream& out) const
+{
+    // Collect single-DoF joints and find max name length
+    std::vector<const moveit::core::JointModel*> single_dof_joints;
+    size_t name_len = 0;
+    
+    for (const moveit::core::JointModel* jm : this->getJointModels())
+    {
+        if (jm->getVariableCount() == 1)
+        {
+            single_dof_joints.push_back(jm);
+            name_len = std::max(name_len, jm->getName().length());
+        }
+    }
+    
+    if (single_dof_joints.empty())
+    {
+        out << "No single-DoF joints found.\n";
+        return;
+    }
+    
+    name_len += 3;
+
+    // Helper lambda for formatting numeric values
+    auto to_str = [](double v) -> std::string
+    {
+        if (v <= -std::numeric_limits<double>::infinity()) return "-inf";
+        if (v >= std::numeric_limits<double>::infinity()) return "inf";
+        
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3) << v;
+        return oss.str();
+    };
+
+    // Print header
+    out << std::left;
+    out << std::setw(name_len) << "joint" 
+        << std::setw(18) << "position"
+        << std::setw(10) << "vel"
+        << std::setw(10) << "accel"
+        << std::setw(10) << "jerk"
+        << '\n';
+    
+    out << std::string(name_len + 18 + 10 + 10 + 10, '-') << '\n';
+
+    // Print joint limits
+    for (const moveit::core::JointModel* jm : single_dof_joints)
+    {
+        const moveit_msgs::msg::JointLimits& lim = jm->getVariableBoundsMsg()[0];
+
+        out << std::setw(name_len) << lim.joint_name 
+            << std::setw(18) << ("[" + to_str(lim.min_position) + ", " + to_str(lim.max_position) + "]") 
+            << std::setw(10) << ("|" + to_str(lim.max_velocity) + "|")
+            << std::setw(10) << ("|" + to_str(lim.max_acceleration) + "|")
+            << std::setw(10) << ("|" + to_str(lim.max_jerk) + "|")
+            << '\n';
+    }
+}
+
 }  // end of namespace core
 }  // end of namespace moveit
