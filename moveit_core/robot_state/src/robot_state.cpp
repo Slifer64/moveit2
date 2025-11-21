@@ -219,6 +219,38 @@ void RobotState::updateMimicJoints(const JointModelGroup* group)
   markDirtyJointTransforms(group);
 }
 
+void RobotState::updateMimicJointVelocity(const JointModel* joint)
+{
+  if (joint->getVariableCount() == 0)
+  {
+    return;
+  }
+  double v = velocity_[joint->getFirstVariableIndex()];
+  for (const JointModel* jm : joint->getMimicRequests())
+  {
+    velocity_[jm->getFirstVariableIndex()] = jm->getMimicFactor() * v;
+  }
+}
+
+void RobotState::updateMimicJointAcceleration(const JointModel* joint)
+{
+  if (has_effort_)
+  {
+    RCLCPP_ERROR(getLogger(), "Unable update mimic joints' accelerations because array is being used for efforts");
+    return;
+  }
+
+  if (joint->getVariableCount() == 0)
+  {
+    return;
+  }
+  double v = effort_or_acceleration_[joint->getFirstVariableIndex()];
+  for (const JointModel* jm : joint->getMimicRequests())
+  {
+    effort_or_acceleration_[jm->getFirstVariableIndex()] = jm->getMimicFactor() * v;
+  }
+}
+
 void RobotState::zeroVelocities()
 {
   has_velocity_ = false;
@@ -637,6 +669,36 @@ void RobotState::copyJointGroupPositions(const JointModelGroup* group, Eigen::Ve
     values(i) = position_[il[i]];
 }
 
+void RobotState::copyJointGroupActivePositions(const JointModelGroup* group, double* gstate) const
+{
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    memcpy(gstate + i, &position_.at(jm->getFirstVariableIndex()), jm->getVariableCount() * sizeof(double));
+    i += jm->getVariableCount();
+  }
+}
+
+void RobotState::copyJointGroupActiveVelocities(const JointModelGroup* group, double* gstate) const
+{
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    memcpy(gstate + i, &velocity_.at(jm->getFirstVariableIndex()), jm->getVariableCount() * sizeof(double));
+    i += jm->getVariableCount();
+  }
+}
+
+void RobotState::copyJointGroupActiveAccelerations(const JointModelGroup* group, double* gstate) const
+{
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    memcpy(gstate + i, &effort_or_acceleration_.at(jm->getFirstVariableIndex()), jm->getVariableCount() * sizeof(double));
+    i += jm->getVariableCount();
+  }
+}
+
 void RobotState::setJointGroupVelocities(const JointModelGroup* group, const double* gstate)
 {
   markVelocity();
@@ -658,6 +720,30 @@ void RobotState::setJointGroupVelocities(const JointModelGroup* group, const Eig
   const std::vector<int>& il = group->getVariableIndexList();
   for (std::size_t i = 0; i < il.size(); ++i)
     velocity_[il[i]] = values(i);
+}
+
+void RobotState::setJointGroupActiveVelocities(const JointModelGroup* group, const std::vector<double>& gstate)
+{
+  assert(gstate.size() == group->getActiveVariableCount());
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    setJointVelocities(jm, &gstate[i]);
+    updateMimicJointVelocity(jm);
+    i += jm->getVariableCount();
+  }
+}
+
+void RobotState::setJointGroupActiveVelocities(const JointModelGroup* group, const Eigen::VectorXd& values)
+{
+  assert(gstate.size() == group->getActiveVariableCount());
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    setJointVelocities(jm, &values(i));
+    updateMimicJointVelocity(jm);
+    i += jm->getVariableCount();
+  }
 }
 
 void RobotState::copyJointGroupVelocities(const JointModelGroup* group, double* gstate) const
@@ -703,6 +789,30 @@ void RobotState::setJointGroupAccelerations(const JointModelGroup* group, const 
   const std::vector<int>& il = group->getVariableIndexList();
   for (std::size_t i = 0; i < il.size(); ++i)
     effort_or_acceleration_[il[i]] = values(i);
+}
+
+void RobotState::setJointGroupActiveAccelerations(const JointModelGroup* group, const std::vector<double>& gstate)
+{
+  assert(gstate.size() == group->getActiveVariableCount());
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    setJointAccelerations(jm, &gstate[i]);
+    updateMimicJointAcceleration(jm);
+    i += jm->getVariableCount();
+  }
+}
+
+void RobotState::setJointGroupActiveAccelerations(const JointModelGroup* group, const Eigen::VectorXd& values)
+{
+  assert(gstate.size() == group->getActiveVariableCount());
+  std::size_t i = 0;
+  for (const JointModel* jm : group->getActiveJointModels())
+  {
+    setJointAccelerations(jm, &values(i));
+    updateMimicJointAcceleration(jm);
+    i += jm->getVariableCount();
+  }
 }
 
 void RobotState::copyJointGroupAccelerations(const JointModelGroup* group, double* gstate) const
