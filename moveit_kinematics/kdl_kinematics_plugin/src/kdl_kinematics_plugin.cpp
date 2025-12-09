@@ -51,6 +51,9 @@
 #include <kdl/frames_io.hpp>
 #include <kdl/kinfam_io.hpp>
 
+#include <algorithm>
+#include <cfloat>
+
 namespace kdl_kinematics_plugin
 {
 namespace
@@ -71,6 +74,23 @@ void KDLKinematicsPlugin::getRandomConfiguration(Eigen::VectorXd& jnt_array) con
 {
   state_->setToRandomPositions(joint_model_group_);
   state_->copyJointGroupPositions(joint_model_group_, &jnt_array[0]);
+}
+
+void KDLKinematicsPlugin::getRandomDeltaQ(Eigen::VectorXd& delta_q) const
+{
+  // **the code below has bug**: it can violate mimic joint constraints
+  // auto delta_q_active = Eigen::VectorXd::Random(active_dimension_);
+  // **Correct implementation** :
+  auto& rng = state_->getRandomNumberGenerator();
+  Eigen::VectorXd delta_q_active(active_dimension_);
+  for (auto& dq : delta_q_active)
+    dq = rng.uniformReal(-1.0, 1.0);
+
+  for (std::size_t i = 0; i < mimic_joints_.size(); i++)
+  {
+    // for delta_q, mimic offset is cancelled out
+    delta_q(i) = mimic_joints_[i].multiplier * delta_q_active(mimic_joints_[i].map_index);
+  }
 }
 
 void KDLKinematicsPlugin::getRandomConfiguration(const Eigen::VectorXd& seed_state,
@@ -163,16 +183,37 @@ bool KDLKinematicsPlugin::initialize(const rclcpp::Node::SharedPtr& node, const 
     return false;
   }
 
-  dimension_ = joint_model_group_->getActiveJointModels().size() + joint_model_group_->getMimicJointModels().size();
+  *const_cast<unsigned int*>(&active_dimension_) = joint_model_group_->getActiveJointModels().size();
+  *const_cast<unsigned int*>(&dimension_) = active_dimension_ + joint_model_group_->getMimicJointModels().size();
   for (std::size_t i = 0; i < joint_model_group_->getJointModels().size(); ++i)
   {
-    if (joint_model_group_->getJointModels()[i]->getType() == moveit::core::JointModel::REVOLUTE ||
-        joint_model_group_->getJointModels()[i]->getType() == moveit::core::JointModel::PRISMATIC)
+    const moveit::core::JointModel* jm = joint_model_group_->getJointModels()[i]; 
+    if (jm->getType() == moveit::core::JointModel::REVOLUTE ||
+        jm->getType() == moveit::core::JointModel::PRISMATIC)
     {
-      solver_info_.joint_names.push_back(joint_model_group_->getJointModelNames()[i]);
-      const std::vector<moveit_msgs::msg::JointLimits>& jvec =
-          joint_model_group_->getJointModels()[i]->getVariableBoundsMsg();
-      solver_info_.limits.insert(solver_info_.limits.end(), jvec.begin(), jvec.end());
+      solver_info_.joint_names.push_back(jm->getName());
+      /** if the joint is mimic, enforce joint limits that are consistent with the parent's limits
+       * otherwise, `clipToJointLimits` can produce joint values that violate the mimic joint constraints
+       */
+      if (jm->getMimic())
+      {
+        double mult = jm->getMimicFactor();
+        double offset = jm->getMimicOffset();
+        // 1-DoF joints (revolute or prismatic) so getVariableBoundsMsg().size() == 1
+        moveit_msgs::msg::JointLimits limits = jm->getMimic()->getVariableBoundsMsg()[0];
+        limits.min_position = mult * limits.min_position + offset; 
+        limits.max_position = mult * limits.max_position + offset;
+        if (limits.min_position > limits.max_position)
+          std::swap(limits.min_position, limits.max_position);
+        limits.max_velocity = std::fabs(mult) * limits.max_velocity;
+        limits.max_acceleration = std::fabs(mult) * limits.max_acceleration;
+        limits.max_jerk = std::fabs(mult) * limits.max_jerk;
+        solver_info_.limits.emplace_back(limits);
+      }
+      else // the joint is active so get the limits directly
+      {
+        solver_info_.limits.emplace_back(jm->getVariableBoundsMsg()[0]);
+      }
     }
   }
 
@@ -195,28 +236,39 @@ bool KDLKinematicsPlugin::initialize(const rclcpp::Node::SharedPtr& node, const 
   getJointWeights();
 
   // Check for mimic joints
-  unsigned int joint_counter = 0;
+  unsigned int active_joint_idx = -1; // the index of an active joint in the active joints vector
+  unsigned int joint_idx = -1; // the index of a joint in the (active + mimic) joints vector
   for (std::size_t i = 0; i < kdl_chain_.getNrOfSegments(); ++i)
   {
-    const moveit::core::JointModel* jm = robot_model_->getJointModel(kdl_chain_.segments[i].getJoint().getName());
+    const std::string joint_name = kdl_chain_.segments[i].getJoint().getName();
+    const moveit::core::JointModel* jm = robot_model_->getJointModel(joint_name);
+    
+    // skip fixed joints
+    if (jm->getVariableCount() == 0) continue;
 
-    // first check whether it belongs to the set of active joints in the group
-    if (jm->getMimic() == nullptr && jm->getVariableCount() > 0)
+    const moveit::core::JointModel* mimic_parent_jm = jm->getMimic();
+  
+    ++joint_idx;
+
+    // check if it is an active joint
+    if (mimic_parent_jm == nullptr)
     {
+      ++active_joint_idx;
       JointMimic mimic_joint;
-      mimic_joint.reset(joint_counter);
-      mimic_joint.joint_name = kdl_chain_.segments[i].getJoint().getName();
+      mimic_joint.reset(active_joint_idx, joint_idx);
+      mimic_joint.joint_name = joint_name;
       mimic_joint.active = true;
       mimic_joints_.push_back(mimic_joint);
-      ++joint_counter;
       continue;
     }
-    if (joint_model_group_->hasJointModel(jm->getName()))
+    // check that the joint belongs to the joint model group
+    if (joint_model_group_->hasJointModel(joint_name))
     {
-      if (jm->getMimic() && joint_model_group_->hasJointModel(jm->getMimic()->getName()))
+      // check that the joint has a parent that is mimicking, and that the parent is part of the joint model group
+      if (mimic_parent_jm && joint_model_group_->hasJointModel(mimic_parent_jm->getName()))
       {
         JointMimic mimic_joint;
-        mimic_joint.joint_name = kdl_chain_.segments[i].getJoint().getName();
+        mimic_joint.joint_name = joint_name;
         mimic_joint.offset = jm->getMimicOffset();
         mimic_joint.multiplier = jm->getMimicFactor();
         mimic_joints_.push_back(mimic_joint);
@@ -224,17 +276,22 @@ bool KDLKinematicsPlugin::initialize(const rclcpp::Node::SharedPtr& node, const 
       }
     }
   }
+
+  // for each mimic joint find the index of the parent joint that is being mimicked
   for (JointMimic& mimic_joint : mimic_joints_)
   {
     if (!mimic_joint.active)
     {
-      const moveit::core::JointModel* joint_model =
-          joint_model_group_->getJointModel(mimic_joint.joint_name)->getMimic();
-      for (JointMimic& mimic_joint_recal : mimic_joints_)
+      const std::string mimic_parent_joint_name = 
+        joint_model_group_->getJointModel(mimic_joint.joint_name)->getMimic()->getName();
+      // find the parent joint
+      for (JointMimic& mimic_joint_recall : mimic_joints_)
       {
-        if (mimic_joint_recal.joint_name == joint_model->getName())
+        if (mimic_joint_recall.joint_name == mimic_parent_joint_name)
         {
-          mimic_joint.map_index = mimic_joint_recal.map_index;
+          // set the index of this mimic joint to be the parent index
+          mimic_joint.map_index = mimic_joint_recall.map_index;
+          mimic_joint.index = mimic_joint_recall.index;
         }
       }
     }
@@ -478,7 +535,7 @@ int KDLKinematicsPlugin::CartToJnt(KDL::ChainIkSolverVelMimicSVD& ik_solver, con
         break;
       // wiggle joints
       last_delta_twist_norm = DBL_MAX;
-      delta_q.data.setRandom();
+      getRandomDeltaQ(delta_q.data);
       delta_q.data *= std::min(0.1, delta_twist_norm);
       clipToJointLimits(q_out, delta_q, extra_joint_weights);
       extra_joint_weights.setOnes();

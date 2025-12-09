@@ -135,6 +135,8 @@ protected:
                 const Twist& cartesian_weights) const;
 
 private:
+  void getRandomDeltaQ(Eigen::VectorXd& delta_q) const;
+
   void getJointWeights();
   bool timedOut(const rclcpp::Time& start_time, double duration) const;
 
@@ -162,7 +164,8 @@ private:
 
   bool initialized_;  ///< Internal variable that indicates whether solver is configured and ready
 
-  unsigned int dimension_;                             ///< Dimension of the group
+  const unsigned int dimension_ = 0;                   ///< Dimension of the group (active + passive/mimic)
+  const unsigned int active_dimension_ = 0;            ///< Dimension of the active joints in the group
   moveit_msgs::msg::KinematicSolverInfo solver_info_;  ///< Stores information for the inverse kinematics solver
 
   const moveit::core::JointModelGroup* joint_model_group_;
