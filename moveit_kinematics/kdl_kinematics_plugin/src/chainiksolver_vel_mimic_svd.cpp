@@ -101,10 +101,12 @@ int ChainIkSolverVelMimicSVD::CartToJnt(const JntArray& q_in, const Twist& v_in,
   // weight Jacobian
   auto& jac = jac_reduced_.data;
   const Eigen::Index rows = svd_.rows();  // only operate on position rows?
+  // jac_hat = cartesian_weights * jac * joint_weights 
   jac.topRows(rows) *= joint_weights.asDiagonal();
   jac.topRows(rows).transpose() *= cartesian_weights.topRows(rows).asDiagonal();
 
   // transform v_in to 6D Eigen::Vector
+  // vin_hat = cartesian_weights * vin
   Eigen::Matrix<double, 6, 1> vin;
   vin.topRows<3>() = Eigen::Map<const Eigen::Array3d>(v_in.vel.data, 3) * cartesian_weights.topRows<3>().array();
   vin.bottomRows<3>() = Eigen::Map<const Eigen::Array3d>(v_in.rot.data, 3) * cartesian_weights.bottomRows<3>().array();
@@ -112,10 +114,13 @@ int ChainIkSolverVelMimicSVD::CartToJnt(const JntArray& q_in, const Twist& v_in,
   // Do a singular value decomposition: J = U*S*V^t
   svd_.compute(jac.topRows(rows));
 
+  // qdot_hat = inv(joint_weights) * qdot, therefore to get qdot:
+  // qdot_out_reduced_.array() *= joint_weights.array();
   if (num_mimic_joints_ > 0)
   {
     qdot_out_reduced_.noalias() = svd_.solve(vin.topRows(rows));
     qdot_out_reduced_.array() *= joint_weights.array();
+    qdot_out.resize(chain_.getNrOfJoints());
     for (unsigned int i = 0; i < chain_.getNrOfJoints(); ++i)
       qdot_out(i) = qdot_out_reduced_[mimic_joints_[i].map_index] * mimic_joints_[i].multiplier;
   }
