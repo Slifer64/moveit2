@@ -35,6 +35,7 @@
 /* Author: Sachin Chitta */
 
 #pragma once
+#include <string>
 
 namespace kdl_kinematics_plugin
 {
@@ -47,25 +48,30 @@ class JointMimic
 public:
   JointMimic()
   {
-    reset(0);
+    reset(0, 0);
   }
 
   /** \brief Offset for this joint value from the joint that it mimics */
   double offset;
   /** \brief Multiplier for this joint value from the joint that it mimics */
   double multiplier;
-  /** \brief Index of the joint that this joint mimics in the vector of active degrees of freedom */
+  /** \brief For mimic joints: the index of the active joint that this joint mimics in the active 
+  joints vector. For active joints: the index of the joint in the active joints vector. */
   unsigned int map_index;
+   /** \brief For mimic joints: the index of the active joint that this joint mimics in the (active + mimic)
+  joints vector. For active joints: the index of the joint in the (active + mimic) joints vector. */
+  unsigned int index;
   /** \brief Name of this joint */
   std::string joint_name;
   /** \brief If true, this joint is an active DOF and not a mimic joint*/
   bool active;
 
-  void reset(unsigned int index)
+  void reset(unsigned int map_idx, unsigned int idx)
   {
     offset = 0.0;
     multiplier = 1.0;
-    map_index = index;
+    map_index = map_idx;
+    index = idx;
     active = false;
   }
 };
