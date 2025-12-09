@@ -401,7 +401,7 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
   auto orientation_vs_position_weight = params_.position_only_ik ? 0.0 : params_.orientation_vs_position;
   if (orientation_vs_position_weight == 0.0)
     RCLCPP_INFO(getLogger(), "Using position only ik");
-
+  
   Eigen::Matrix<double, 6, 1> cartesian_weights;
   cartesian_weights.topRows<3>().setConstant(1.0);
   cartesian_weights.bottomRows<3>().setConstant(orientation_vs_position_weight);
@@ -423,7 +423,20 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
                                        << ' ' << ik_pose.orientation.x << ' ' << ik_pose.orientation.y << ' '
                                        << ik_pose.orientation.z << ' ' << ik_pose.orientation.w);
 
+  auto calc_solution_cost = [this, &pose_desired](const KDL::JntArray& jnt_pos) -> double
+  {
+    KDL::Frame f;
+    fk_solver_->JntToCart(jnt_pos, f);
+    KDL::Twist delta_twist = KDL::diff(pose_desired, f);
+    return delta_twist.vel.Norm() + delta_twist.rot.Norm(); 
+  };
+
+  KDL::JntArray best_jnt_pos_out(jnt_seed_state);
+  double best_cost = calc_solution_cost(best_jnt_pos_out);
+
   unsigned int attempt = 0;
+  bool found_any_solution = false;
+  bool found_accurate_solution = false;
   do
   {
     ++attempt;
@@ -442,32 +455,70 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
 
     int ik_valid =
         CartToJnt(ik_solver_vel, jnt_pos_in, pose_desired, jnt_pos_out, params_.max_solver_iterations,
-                  Eigen::Map<const Eigen::VectorXd>(joint_weights_.data(), joint_weights_.size()), cartesian_weights);
+      Eigen::Map<const Eigen::VectorXd>(joint_weights_.data(), joint_weights_.size()), cartesian_weights);
     if (ik_valid == 0 || options.return_approximate_solution)  // found acceptable solution
     {
       if (!consistency_limits_active.empty() &&
           !checkConsistency(jnt_seed_state.data, consistency_limits_active, jnt_pos_out.data))
         continue;
+      
+      found_any_solution = true;
 
-      Eigen::Map<Eigen::VectorXd>(solution.data(), solution.size()) = jnt_pos_out.data;
-      if (solution_callback)
+      RCLCPP_DEBUG_STREAM(getLogger(), 
+        "IK finished: elapse time = " << (steady_clock.now() - start_time).seconds() << " (timeout = " << timeout << ") sec"
+        << ", attempt = " << attempt
+        << ", is_valid = " << (ik_valid == 0 ? "true" : "false")
+        << ", approximate_solution = " << (ik_valid != 0 && options.return_approximate_solution ? "true" : "false")
+      );
+
+      // get the best solution so far
+      double cost = calc_solution_cost(jnt_pos_out);
+      if (cost < best_cost)
       {
-        solution_callback(ik_pose, solution, error_code);
-        if (error_code.val != error_code.SUCCESS)
-          continue;
+        best_jnt_pos_out = jnt_pos_out;
+        cost = best_cost;
       }
 
-      // solution passed consistency check and solution callback
-      error_code.val = error_code.SUCCESS;
-      RCLCPP_DEBUG_STREAM(getLogger(), "Solved after " << (steady_clock.now() - start_time).seconds() << " < "
-                                                       << timeout << "s and " << attempt << " attempts");
-      return true;
+      // found accurate solution, so exit
+      if (ik_valid == 0)
+      {
+        found_accurate_solution = true;
+        break;
+      }
     }
+
   } while (!timedOut(start_time, timeout));
 
-  RCLCPP_DEBUG_STREAM(getLogger(), "IK timed out after " << (steady_clock.now() - start_time).seconds() << " > "
-                                                         << timeout << "s and " << attempt << " attempts");
+  if (found_any_solution)
+  {
+    Eigen::Map<Eigen::VectorXd>(solution.data(), solution.size()) = best_jnt_pos_out.data;
+    if (solution_callback)
+    {
+      solution_callback(ik_pose, solution, error_code);
+      // if (error_code.val != error_code.SUCCESS)
+      //   continue;
+    }
+  }
+
+  RCLCPP_DEBUG_STREAM(getLogger(), "IK finished after " 
+    << (steady_clock.now() - start_time).seconds() << "sec and " << attempt << " attempts");
+
+  if (found_accurate_solution)
+  {
+    error_code.val = error_code.SUCCESS;
+    RCLCPP_DEBUG_STREAM(getLogger(), "Found accurate solution!");
+    return true;
+  }
+  else if (found_any_solution)
+  {
+    error_code.val = error_code.SUCCESS;
+    RCLCPP_DEBUG_STREAM(getLogger(), "Found approximate solution.");
+    return true;
+  }
+  
   error_code.val = error_code.TIMED_OUT;
+  RCLCPP_DEBUG_STREAM(getLogger(), "Timeout, no solution found.");
+
   return false;
 }
 
@@ -476,24 +527,29 @@ int KDLKinematicsPlugin::CartToJnt(KDL::ChainIkSolverVelMimicSVD& ik_solver, con
                                    const KDL::Frame& p_in, KDL::JntArray& q_out, const unsigned int max_iter,
                                    const Eigen::VectorXd& joint_weights, const Twist& cartesian_weights) const
 {
-  double last_delta_twist_norm = DBL_MAX;
-  double step_size = 1.0;
-  KDL::Frame f;
-  KDL::Twist delta_twist;
-  KDL::JntArray delta_q(q_out.rows()), q_backup(q_out.rows());
-  Eigen::ArrayXd extra_joint_weights(joint_weights.rows());
-  extra_joint_weights.setOnes();
+  auto t0 = std::chrono::steady_clock::now();
 
   q_out = q_init;
+
+  KDL::Frame f; // current pose solution (corresponding to `q_out`)
+  KDL::Twist delta_twist; // the error between the current pose solution `f` and the the goal pose `p_in`
+  double last_delta_twist_norm = DBL_MAX;
+  KDL::JntArray delta_q(q_out.rows()); // joint diff to apply to the current joint solution `q_out`
+  double step_size = 1.0; // step size applied to delta_q to get new q_out
+  KDL::JntArray q_backup(q_out.rows()); // joint values of last successful step
+  Eigen::ArrayXd extra_joint_weights(joint_weights.rows()); // used to weight down joints that at the current solution step are close to their limits
+  extra_joint_weights.setOnes();
+
   RCLCPP_DEBUG_STREAM(getLogger(), "Input: " << q_init);
 
-  unsigned int i;
+  unsigned int iter;
   bool success = false;
-  for (i = 0; i < max_iter; ++i)
+  bool stuck_in_singularity = false;
+  for (iter = 0; iter < max_iter; ++iter)
   {
     fk_solver_->JntToCart(q_out, f);
-    delta_twist = diff(f, p_in);
-    RCLCPP_DEBUG_STREAM(getLogger(), "[" << std::setw(3) << i << "] delta_twist: " << delta_twist);
+    delta_twist = KDL::diff(f, p_in);
+    RCLCPP_DEBUG_STREAM(getLogger(), "[" << std::setw(3) << iter << "] delta_twist: " << delta_twist);
 
     // check norms of position and orientation errors
     const double position_error = delta_twist.vel.Norm();
@@ -510,6 +566,7 @@ int KDLKinematicsPlugin::CartToJnt(KDL::ChainIkSolverVelMimicSVD& ik_solver, con
       // if the error increased, we are close to a singularity -> reduce step size
       double old_step_size = step_size;
       step_size *= std::min(0.2, last_delta_twist_norm / delta_twist_norm);  // reduce scale;
+      // delta_q does not have mimic offset, so we can multiply directly
       KDL::Multiply(delta_q, step_size / old_step_size, delta_q);
       RCLCPP_DEBUG(getLogger(), "      error increased: %f -> %f, scale: %f", last_delta_twist_norm, delta_twist_norm,
                    step_size);
@@ -524,15 +581,20 @@ int KDLKinematicsPlugin::CartToJnt(KDL::ChainIkSolverVelMimicSVD& ik_solver, con
       ik_solver.CartToJnt(q_out, delta_twist, delta_q, extra_joint_weights * joint_weights.array(), cartesian_weights);
     }
 
+    Eigen::VectorXd delta_q0 = delta_q.data; // unclipped values for debug-print purposes
+
     clipToJointLimits(q_out, delta_q, extra_joint_weights);
 
     const double delta_q_norm = delta_q.data.lpNorm<1>();
-    RCLCPP_DEBUG(getLogger(), "[%3d] pos err: %f  rot err: %f  delta_q: %f", i, position_error, orientation_error,
+    RCLCPP_DEBUG(getLogger(), "[%3d] pos err: %f  rot err: %f  delta_q: %f", iter, position_error, orientation_error,
                  delta_q_norm);
     if (delta_q_norm < params_.epsilon)  // stuck in singularity
     {
       if (step_size < params_.epsilon)  // cannot reach target
+      {
+        stuck_in_singularity = true;
         break;
+      }
       // wiggle joints
       last_delta_twist_norm = DBL_MAX;
       getRandomDeltaQ(delta_q.data);
@@ -547,8 +609,30 @@ int KDLKinematicsPlugin::CartToJnt(KDL::ChainIkSolverVelMimicSVD& ik_solver, con
     RCLCPP_DEBUG_STREAM(getLogger(), "      q: " << q_out);
   }
 
-  int result = (i == max_iter) ? -3 : (success ? 0 : -2);
-  RCLCPP_DEBUG_STREAM(getLogger(), "Result " << result << " after " << i << " iterations: " << q_out);
+  double elaps_time = 1e3 * std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+  int result;
+  std::string result_msg;
+  if (stuck_in_singularity)
+  {
+    result = -4;
+    result_msg = "STUCK_IN_SINGULARITY";
+  }
+  else if (iter == max_iter)
+  {
+    result = -3;
+    result_msg = "MAX_ITERATIONS";
+  } 
+  else
+  {
+    result = success ? 0 : -2;
+    result_msg = success ? "SUCCESS" : "FAIL";
+  }
+
+  RCLCPP_DEBUG_STREAM(getLogger(), "Result: "<< result_msg 
+    << ", elapsed_time: " << elaps_time << " ms"
+    << ", iterations:" << iter
+    << ", solution: " << q_out);
 
   return result;
 }
