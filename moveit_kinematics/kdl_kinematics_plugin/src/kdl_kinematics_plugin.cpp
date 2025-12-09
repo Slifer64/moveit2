@@ -323,7 +323,7 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
   }
 
   // Resize consistency limits to remove mimic joints
-  std::vector<double> consistency_limits_mimic;
+  std::vector<double> consistency_limits_active;
   if (!consistency_limits.empty())
   {
     if (consistency_limits.size() != dimension_)
@@ -337,7 +337,7 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
     for (std::size_t i = 0; i < dimension_; ++i)
     {
       if (mimic_joints_[i].active)
-        consistency_limits_mimic.push_back(consistency_limits[i]);
+        consistency_limits_active.push_back(consistency_limits[i]);
     }
   }
 
@@ -372,9 +372,9 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
     ++attempt;
     if (attempt > 1)  // randomly re-seed after first attempt
     {
-      if (!consistency_limits_mimic.empty())
+      if (!consistency_limits_active.empty())
       {
-        getRandomConfiguration(jnt_seed_state.data, consistency_limits_mimic, jnt_pos_in.data);
+        getRandomConfiguration(jnt_seed_state.data, consistency_limits_active, jnt_pos_in.data);
       }
       else
       {
@@ -388,8 +388,8 @@ bool KDLKinematicsPlugin::searchPositionIK(const geometry_msgs::msg::Pose& ik_po
                   Eigen::Map<const Eigen::VectorXd>(joint_weights_.data(), joint_weights_.size()), cartesian_weights);
     if (ik_valid == 0 || options.return_approximate_solution)  // found acceptable solution
     {
-      if (!consistency_limits_mimic.empty() &&
-          !checkConsistency(jnt_seed_state.data, consistency_limits_mimic, jnt_pos_out.data))
+      if (!consistency_limits_active.empty() &&
+          !checkConsistency(jnt_seed_state.data, consistency_limits_active, jnt_pos_out.data))
         continue;
 
       Eigen::Map<Eigen::VectorXd>(solution.data(), solution.size()) = jnt_pos_out.data;
