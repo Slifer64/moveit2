@@ -43,6 +43,7 @@
 #include <rclcpp/node.hpp>
 #include <string>
 #include <functional>
+#include <mutex>
 #include <moveit/utils/logger.hpp>
 
 #include <moveit_kinematics_base_export.h>
@@ -575,6 +576,19 @@ public:
     return default_timeout_;
   }
 
+  void setErrorTolerance(double pos_err_tol, double orient_err_tol)
+  {
+    std::scoped_lock<std::mutex> _(mtx_);
+    pos_err_tol_ = pos_err_tol;
+    orient_err_tol_ = orient_err_tol;
+  }
+
+  void getErrorTolerance(double& pos_err_tol, double& orient_err_tol) const
+  {
+    pos_err_tol = pos_err_tol_;
+    orient_err_tol = orient_err_tol_;
+  }
+
   /**
    * @brief  Virtual destructor for the interface
    */
@@ -589,6 +603,10 @@ protected:
   std::string group_name_;
   std::string base_frame_;
   std::vector<std::string> tip_frames_;
+
+  double pos_err_tol_;
+  double orient_err_tol_;
+  std::mutex mtx_;
 
   double default_timeout_;
   std::vector<unsigned int> redundant_joint_indices_;
